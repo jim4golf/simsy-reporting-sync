@@ -1,0 +1,20 @@
+{
+  "name": "simsy-reporting-sync",
+  "version": "1.0.0",
+  "description": "S-IMSY Reporting Platform — Cron Sync Worker (Supabase → PostgreSQL)",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "trigger": "wrangler dev --test-scheduled"
+  },
+  "dependencies": {
+    "postgres": "^3.4.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241106.0",
+    "typescript": "^5.6.3",
+    "wrangler": "^3.91.0"
+  }
+}

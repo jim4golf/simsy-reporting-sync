@@ -1,0 +1,30 @@
+name = "simsy-reporting-sync"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cron trigger — runs every 6 hours
+[triggers]
+crons = ["0 */6 * * *"]
+
+# Hyperdrive binding — connects to Hetzner PostgreSQL as the OWNER role
+# The sync worker needs write access (bypasses RLS as table owner)
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "5c041ab3444248f3b8796f7ad92df6f6"
+# Create with: wrangler hyperdrive create simsy-reporting-db-sync \
+#   --connection-string="postgres://simsy_reporting:PASSWORD@128.140.64.5:5432/simsy_reporting"
+
+# KV namespace for sync watermarks and metadata
+[[kv_namespaces]]
+binding = "SYNC_KV"
+id = "34b18277f8e34b9088878b5e3db03fce"
+# Create with: wrangler kv namespace create SIMSY_SYNC_KV
+
+# Environment variables (non-secret)
+[vars]
+SUPABASE_URL = "https://wrxqqxzbwpoxiufmlbrg.supabase.co"
+SYNC_BATCH_SIZE = "1000"
+
+# Secrets (set via `wrangler secret put`):
+# - SUPABASE_SERVICE_KEY  (Supabase service role key)
