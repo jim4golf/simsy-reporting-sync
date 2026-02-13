@@ -85,16 +85,22 @@ function rowToValues(v: MappedRow): string {
 }
 
 /**
- * Build an ICCID→tenant_id lookup map from the Supabase endpoints table.
+ * Build an ICCID→tenant_id lookup map from multiple Supabase tables.
  * This is needed because many usage records have null tenant_name — the
  * augmentation that populates tenant_name may not have run on all records.
- * We use the endpoint's ICCID and tenant_id to resolve the tenant.
+ *
+ * Sources (checked in order, first match wins):
+ * 1. endpoints table — iccid + tenant_id
+ * 2. bundle_instances_report — iccid + tenant_name/tenant_id
+ * 3. active_bundles — iccid + tenant_name (if iccid column exists)
  */
 async function buildIccidTenantMap(
   supabase: SupabaseClient
-): Promise<Map<string, string>> {
-  console.log('[USAGE] Building ICCID→tenant lookup from endpoints...');
+): Promise<{ exactMap: Map<string, string>; prefixMap: Map<string, string> }> {
+  const map = new Map<string, string>();
 
+  // 1. Endpoints — primary source
+  console.log('[USAGE] Building ICCID→tenant lookup from endpoints...');
   const endpoints = await supabase.fetchAll<{ iccid: string; tenant_id: string }>(
     'endpoints',
     {
@@ -103,8 +109,12 @@ async function buildIccidTenantMap(
     }
   );
 
-  const map = new Map<string, string>();
+  const tenantIdCounts = new Map<string, number>();
   for (const ep of endpoints) {
+    // Track raw tenant_id values for debugging
+    const rawTid = ep.tenant_id || 'NULL';
+    tenantIdCounts.set(rawTid, (tenantIdCounts.get(rawTid) || 0) + 1);
+
     if (!ep.iccid || !ep.tenant_id) continue;
     const normalised = ep.iccid.trim();
     const tenantId = resolveTenantId(null, ep.tenant_id);
@@ -112,9 +122,95 @@ async function buildIccidTenantMap(
       map.set(normalised, tenantId);
     }
   }
+  // Log the distinct tenant_id values found in endpoints
+  const tidEntries = [...tenantIdCounts.entries()].map(([tid, cnt]) => `${tid}(${cnt})`).join(', ');
+  console.log(`[USAGE] Endpoints tenant_id distribution: ${tidEntries}`);
+  console.log(`[USAGE] After endpoints: ${map.size} mappings from ${endpoints.length} rows`);
 
-  console.log(`[USAGE] ICCID→tenant map: ${map.size} entries from ${endpoints.length} endpoints`);
-  return map;
+  // 2. Bundle instances — fills gaps where endpoints table doesn't have the ICCID
+  console.log('[USAGE] Enriching lookup from bundle_instances_report...');
+  try {
+    const instances = await supabase.fetchAll<{ iccid: string; tenant_name: string; tenant_id: string }>(
+      'bundle_instances_report',
+      {
+        select: 'iccid,tenant_name,tenant_id',
+        batchSize: 1000,
+      }
+    );
+
+    let added = 0;
+    for (const inst of instances) {
+      if (!inst.iccid) continue;
+      const normalised = inst.iccid.trim();
+      if (map.has(normalised)) continue;
+      const tenantId = resolveTenantId(inst.tenant_name, inst.tenant_id);
+      if (tenantId) {
+        map.set(normalised, tenantId);
+        added++;
+      }
+    }
+    console.log(`[USAGE] After bundle_instances: ${map.size} mappings (+${added} new from ${instances.length} rows)`);
+  } catch (e) {
+    console.warn(`[USAGE] bundle_instances_report lookup failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // 3. Active bundles — last resort
+  try {
+    const bundles = await supabase.fetchAll<{ iccid: string; tenant_name: string }>(
+      'active_bundles',
+      {
+        select: 'iccid,tenant_name',
+        orderBy: 'collected_at',
+        batchSize: 1000,
+      }
+    );
+
+    let added = 0;
+    for (const b of bundles) {
+      if (!b.iccid) continue;
+      const normalised = b.iccid.trim();
+      if (map.has(normalised)) continue;
+      const tenantId = resolveTenantId(b.tenant_name, null);
+      if (tenantId) {
+        map.set(normalised, tenantId);
+        added++;
+      }
+    }
+    console.log(`[USAGE] After active_bundles: ${map.size} mappings (+${added} new from ${bundles.length} rows)`);
+  } catch (e) {
+    console.warn(`[USAGE] active_bundles lookup skipped: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  // 4. Build ICCID prefix→tenant map for fallback matching
+  // This handles orphan ICCIDs (decommissioned SIMs) not in any table
+  // by matching the longest common prefix with known ICCIDs
+  const prefixMap = new Map<string, Map<string, number>>();
+  for (const [iccid, tenant] of map) {
+    // Use first 12 digits as prefix (country + issuer + network)
+    const prefix = iccid.substring(0, 12);
+    if (!prefixMap.has(prefix)) prefixMap.set(prefix, new Map());
+    const tenantCounts = prefixMap.get(prefix)!;
+    tenantCounts.set(tenant, (tenantCounts.get(tenant) || 0) + 1);
+  }
+  // For each prefix, pick the dominant tenant
+  const prefixTenantMap = new Map<string, string>();
+  for (const [prefix, tenantCounts] of prefixMap) {
+    let maxCount = 0;
+    let dominantTenant = '';
+    for (const [tenant, count] of tenantCounts) {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantTenant = tenant;
+      }
+    }
+    if (dominantTenant) {
+      prefixTenantMap.set(prefix, dominantTenant);
+    }
+  }
+  console.log(`[USAGE] Built ${prefixTenantMap.size} ICCID prefix→tenant fallbacks: ${[...prefixTenantMap.entries()].map(([p, t]) => `${p}→${t}`).join(', ')}`);
+
+  console.log(`[USAGE] Final ICCID→tenant map: ${map.size} unique ICCIDs`);
+  return { exactMap: map, prefixMap: prefixTenantMap };
 }
 
 export async function syncUsage(
@@ -131,7 +227,7 @@ export async function syncUsage(
     console.log(`[USAGE] Starting sync (watermark: ${watermark || 'none'})`);
 
     // Build ICCID→tenant lookup for records with null tenant_name
-    const iccidTenantMap = await buildIccidTenantMap(supabase);
+    const { exactMap: iccidTenantMap, prefixMap: iccidPrefixMap } = await buildIccidTenantMap(supabase);
 
     const records = await supabase.fetchAll<SupabaseUsageRecord>(
       'custom_usage_reports',
@@ -153,8 +249,10 @@ export async function syncUsage(
     // Map all records, resolving tenant from tenant_name or ICCID lookup
     const mapped: MappedRow[] = [];
     const unknownTenants = new Set<string>();
+    const unmatchedIccids = new Map<string, number>(); // iccid → count
     let resolvedViaTenantName = 0;
     let resolvedViaIccid = 0;
+    let resolvedViaPrefix = 0;
     let skippedNoTenant = 0;
 
     for (const r of records) {
@@ -164,16 +262,25 @@ export async function syncUsage(
       if (tenantId) {
         resolvedViaTenantName++;
       } else if (r.iccid) {
-        // Fall back to ICCID→tenant lookup
+        // Fall back to ICCID→tenant exact lookup
         const normalised = r.iccid.trim();
         tenantId = iccidTenantMap.get(normalised) || null;
         if (tenantId) {
           resolvedViaIccid++;
+        } else {
+          // Last resort: ICCID prefix-based tenant inference
+          const prefix = normalised.substring(0, 12);
+          tenantId = iccidPrefixMap.get(prefix) || null;
+          if (tenantId) {
+            resolvedViaPrefix++;
+          }
         }
       }
 
       if (!tenantId) {
         if (r.tenant_name) unknownTenants.add(r.tenant_name);
+        const iccidKey = r.iccid || 'NO_ICCID';
+        unmatchedIccids.set(iccidKey, (unmatchedIccids.get(iccidKey) || 0) + 1);
         skippedNoTenant++;
         continue;
       }
@@ -213,7 +320,14 @@ export async function syncUsage(
     if (unknownTenants.size > 0) {
       console.log(`[USAGE] Unknown tenant names: ${JSON.stringify([...unknownTenants])}`);
     }
-    console.log(`[USAGE] Mapped ${mapped.length} records (via tenant_name: ${resolvedViaTenantName}, via ICCID: ${resolvedViaIccid}, skipped: ${skippedNoTenant})`);
+    if (unmatchedIccids.size > 0) {
+      // Log all unique unmatched ICCIDs with their record counts
+      const unmatchedEntries = [...unmatchedIccids.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([iccid, count]) => `${iccid}(${count})`);
+      console.log(`[USAGE] Unmatched ICCIDs (${unmatchedIccids.size} unique, ${skippedNoTenant} records): ${unmatchedEntries.join(', ')}`);
+    }
+    console.log(`[USAGE] Mapped ${mapped.length} records (via tenant_name: ${resolvedViaTenantName}, via ICCID: ${resolvedViaIccid}, via prefix: ${resolvedViaPrefix}, skipped: ${skippedNoTenant})`);
 
     if (mapped.length === 0) {
       return { table: 'rpt_usage', recordsSynced: 0, duration: Date.now() - start };

@@ -28,6 +28,11 @@ const TENANT_NAME_MAP: Record<string, string> = {
   'travel-simsy': 'travel-simsy',
   'travel simsy': 'travel-simsy',
   'travelsimsy': 'travel-simsy',
+  'trvllr': 'travel-simsy',
+
+  // Test / internal accounts — map to simsy-app
+  'dave (testing)': 'simsy-app',
+  'dave testing': 'simsy-app',
 };
 
 /**
