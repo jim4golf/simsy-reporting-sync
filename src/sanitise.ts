@@ -28,7 +28,9 @@ const TENANT_NAME_MAP: Record<string, string> = {
   'travel-simsy': 'travel-simsy',
   'travel simsy': 'travel-simsy',
   'travelsimsy': 'travel-simsy',
-  'trvllr': 'travel-simsy',
+
+  // Trvllr (separate tenant)
+  'trvllr': 'trvllr',
 
   // Test / internal accounts — map to simsy-app
   'dave (testing)': 'simsy-app',
@@ -59,7 +61,7 @@ export function resolveTenantId(
       return TENANT_NAME_MAP[normalised];
     }
     // If tenant_id is already a canonical form, check directly
-    const canonical = ['allsee', 'cellular-lan', 'simsy-app', 'travel-simsy'];
+    const canonical = ['allsee', 'cellular-lan', 'simsy-app', 'travel-simsy', 'trvllr'];
     if (canonical.includes(normalised)) {
       return normalised;
     }

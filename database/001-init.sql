@@ -81,7 +81,8 @@ INSERT INTO rpt_tenants (tenant_id, tenant_name, role) VALUES
     ('allsee',        'Allsee Technologies Limited', 'tenant'),
     ('cellular-lan',  'Cellular-Lan',                'tenant'),
     ('simsy-app',     'SIMSY_application',           'tenant'),
-    ('travel-simsy',  'Travel-SIMSY',                'tenant')
+    ('travel-simsy',  'Travel-SIMSY',                'tenant'),
+    ('trvllr',        'Trvllr',                      'tenant')
 ON CONFLICT (tenant_id) DO NOTHING;
 
 -- Initial customers
