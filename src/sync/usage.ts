@@ -28,6 +28,7 @@ const SELECT_COLUMNS = [
   'service_type', 'charge_type',
   'consumption', 'charged_consumption', 'uplink_bytes', 'downlink_bytes',
   'bundle_name', 'bundle_moniker', 'status_moniker',
+  'bundle_instance_id', 'sequence', 'sequence_max',
   'rat_type_moniker',
   'serving_operator_name', 'serving_operator_tadig',
   'buy_rating_charge', 'buy_rating_currency',
@@ -35,7 +36,7 @@ const SELECT_COLUMNS = [
 ].join(',');
 
 // How many rows per INSERT statement (postgres.js limit is ~65535 params)
-// 25 columns × 500 rows = 12,500 params — well within limits
+// 29 columns × 500 rows = 14,500 params — well within limits
 const BULK_INSERT_SIZE = 500;
 
 // Maximum records to fetch per sync invocation to avoid Worker timeout
@@ -68,6 +69,9 @@ interface MappedRow {
   bundle_name: string | null;
   bundle_moniker: string | null;
   status_moniker: string | null;
+  bundle_instance_id: string | null;
+  sequence: number | null;
+  sequence_max: number | null;
   rat_type_moniker: string | null;
   serving_operator_name: string | null;
   serving_country_name: string | null;
@@ -81,7 +85,7 @@ interface MappedRow {
 
 /** Convert a mapped row to a SQL VALUES tuple string. */
 function rowToValues(v: MappedRow): string {
-  return `(${esc(v.source_id)}, ${esc(v.tenant_id)}, ${esc(v.customer_name)}, ${esc(v.endpoint_name)}, ${esc(v.endpoint_description)}, ${esc(v.iccid)}, ${esc(v.timestamp)}, ${esc(v.usage_date)}, ${esc(v.service_type)}, ${esc(v.charge_type)}, ${esc(v.consumption)}, ${esc(v.charged_consumption)}, ${esc(v.uplink_bytes)}, ${esc(v.downlink_bytes)}, ${esc(v.bundle_name)}, ${esc(v.bundle_moniker)}, ${esc(v.status_moniker)}, ${esc(v.rat_type_moniker)}, ${esc(v.serving_operator_name)}, ${esc(v.serving_country_name)}, ${esc(v.serving_country_iso2)}, ${esc(v.buy_charge)}, ${esc(v.buy_currency)}, ${esc(v.sell_charge)}, ${esc(v.sell_currency)}, NOW())`;
+  return `(${esc(v.source_id)}, ${esc(v.tenant_id)}, ${esc(v.customer_name)}, ${esc(v.endpoint_name)}, ${esc(v.endpoint_description)}, ${esc(v.iccid)}, ${esc(v.timestamp)}, ${esc(v.usage_date)}, ${esc(v.service_type)}, ${esc(v.charge_type)}, ${esc(v.consumption)}, ${esc(v.charged_consumption)}, ${esc(v.uplink_bytes)}, ${esc(v.downlink_bytes)}, ${esc(v.bundle_name)}, ${esc(v.bundle_moniker)}, ${esc(v.status_moniker)}, ${esc(v.bundle_instance_id)}, ${esc(v.sequence)}, ${esc(v.sequence_max)}, ${esc(v.rat_type_moniker)}, ${esc(v.serving_operator_name)}, ${esc(v.serving_country_name)}, ${esc(v.serving_country_iso2)}, ${esc(v.buy_charge)}, ${esc(v.buy_currency)}, ${esc(v.sell_charge)}, ${esc(v.sell_currency)}, NOW())`;
 }
 
 /**
@@ -305,6 +309,9 @@ export async function syncUsage(
         bundle_name: r.bundle_name || null,
         bundle_moniker: r.bundle_moniker || null,
         status_moniker: r.status_moniker || null,
+        bundle_instance_id: r.bundle_instance_id || null,
+        sequence: r.sequence ?? null,
+        sequence_max: r.sequence_max ?? null,
         rat_type_moniker: r.rat_type_moniker || null,
         serving_operator_name: r.serving_operator_name || null,
         serving_country_name: r.serving_operator_tadig || null,
@@ -343,7 +350,9 @@ export async function syncUsage(
           source_id, tenant_id, customer_name, endpoint_name, endpoint_description,
           iccid, timestamp, usage_date, service_type, charge_type,
           consumption, charged_consumption, uplink_bytes, downlink_bytes,
-          bundle_name, bundle_moniker, status_moniker, rat_type_moniker,
+          bundle_name, bundle_moniker, status_moniker,
+          bundle_instance_id, sequence, sequence_max,
+          rat_type_moniker,
           serving_operator_name, serving_country_name, serving_country_iso2,
           buy_charge, buy_currency, sell_charge, sell_currency, synced_at
         ) VALUES ${valuesClauses}
@@ -354,6 +363,9 @@ export async function syncUsage(
           bundle_name = EXCLUDED.bundle_name,
           bundle_moniker = EXCLUDED.bundle_moniker,
           status_moniker = EXCLUDED.status_moniker,
+          bundle_instance_id = EXCLUDED.bundle_instance_id,
+          sequence = EXCLUDED.sequence,
+          sequence_max = EXCLUDED.sequence_max,
           synced_at = NOW()
       `);
 

@@ -3,9 +3,9 @@ main = "src/index.ts"
 compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Cron trigger — runs every 6 hours
+# Cron trigger — runs every 30 minutes during development
 [triggers]
-crons = ["0 */6 * * *"]
+crons = ["*/30 * * * *"]
 
 # Hyperdrive binding — connects to Hetzner PostgreSQL as the OWNER role
 # The sync worker needs write access (bypasses RLS as table owner)

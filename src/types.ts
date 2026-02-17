@@ -34,6 +34,9 @@ export interface SupabaseUsageRecord {
   buy_rating_currency: string | null;
   sell_rating_charge: number | null;
   sell_rating_currency: string | null;
+  bundle_instance_id: string | null;
+  sequence: number | null;
+  sequence_max: number | null;
   // Sensitive fields exist in source but we never read them
 }
 
@@ -45,8 +48,13 @@ export interface SupabaseBundleRecord {
   status_name: string | null;
   status_moniker: string | null;
   tenant_name: string | null;
+  customer_name: string | null;
+  endpoint_name: string | null;
+  iccid: string | null;
   start_time: string | null;
   end_time: string | null;
+  sequence: number | null;
+  sequence_max: number | null;
   collected_at: string | null;
 }
 

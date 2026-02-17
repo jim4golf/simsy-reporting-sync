@@ -49,15 +49,23 @@ export default {
 
       console.log('Watermarks:', JSON.stringify(watermarks));
 
-      // Ensure all known tenants exist in rpt_tenants
+      // Ensure master tenant exists first (sub-tenants reference it via parent_tenant_id)
       await sql.unsafe(`
         INSERT INTO rpt_tenants (tenant_id, tenant_name, role) VALUES
-          ('allsee',       'Allsee Technologies Limited', 'tenant'),
-          ('cellular-lan', 'Cellular-Lan',                'tenant'),
-          ('simsy-app',    'SIMSY_application',           'tenant'),
-          ('travel-simsy', 'Travel-SIMSY',                'tenant'),
-          ('trvllr',       'Trvllr',                      'tenant')
+          ('s-imsy', 'S-IMSY', 'tenant')
         ON CONFLICT (tenant_id) DO NOTHING
+      `);
+
+      // Ensure all sub-tenants exist with correct parent
+      await sql.unsafe(`
+        INSERT INTO rpt_tenants (tenant_id, tenant_name, parent_tenant_id, role) VALUES
+          ('allsee',       'Allsee Technologies Limited', 's-imsy', 'tenant'),
+          ('cellular-lan', 'Cellular-Lan',                's-imsy', 'tenant'),
+          ('simsy-app',    'SIMSY_application',           's-imsy', 'tenant'),
+          ('travel-simsy', 'Travel-SIMSY',                's-imsy', 'tenant'),
+          ('trvllr',       'Trvllr',                      's-imsy', 'tenant')
+        ON CONFLICT (tenant_id) DO UPDATE SET
+          parent_tenant_id = EXCLUDED.parent_tenant_id
       `);
 
       // Record sync start
@@ -70,7 +78,7 @@ export default {
       console.log('\n--- Syncing Endpoints ---');
       const endpointsResult = await syncEndpoints(supabase, sql, watermarks.endpoints, batchSize);
       results.push(endpointsResult);
-      if (!endpointsResult.error) {
+      if (!endpointsResult.error && endpointsResult.recordsSynced > 0) {
         await env.SYNC_KV.put('sync:watermark:endpoints', now);
       }
 
@@ -78,7 +86,7 @@ export default {
       console.log('\n--- Syncing Bundle Instances ---');
       const instancesResult = await syncInstances(supabase, sql, watermarks.instances, batchSize);
       results.push(instancesResult);
-      if (!instancesResult.error) {
+      if (!instancesResult.error && instancesResult.recordsSynced > 0) {
         await env.SYNC_KV.put('sync:watermark:instances', now);
       }
 
@@ -98,7 +106,7 @@ export default {
       console.log('\n--- Syncing Active Bundles ---');
       const bundlesResult = await syncBundles(supabase, sql, watermarks.bundles, batchSize);
       results.push(bundlesResult);
-      if (!bundlesResult.error) {
+      if (!bundlesResult.error && bundlesResult.recordsSynced > 0) {
         await env.SYNC_KV.put('sync:watermark:bundles', now);
       }
 

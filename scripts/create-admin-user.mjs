@@ -29,7 +29,7 @@ import { randomBytes } from 'node:crypto';
 const subtle = globalThis.crypto?.subtle || webcrypto.subtle;
 
 // ── PBKDF2 parameters — must match src/utils/crypto.ts exactly ──────────────
-const PBKDF2_ITERATIONS = 600_000;
+const PBKDF2_ITERATIONS = 100_000;
 const SALT_BYTES = 16;
 const HASH_BYTES = 32; // 256 bits
 

@@ -7,34 +7,40 @@
 
 // Canonical mapping from Supabase tenant_name → reporting tenant_id
 // This maps all known variations of tenant names to our canonical IDs.
+//
+// Hierarchy:
+//   s-imsy (Master) → allsee, cellular-lan, simsy-app, travel-simsy, trvllr (sub-tenants)
+//   Each sub-tenant and s-imsy itself have their own customers.
 const TENANT_NAME_MAP: Record<string, string> = {
-  // Allsee Technologies
+  // S-IMSY — the master tenant (has its own customers: Eclipse, Pete Scott, etc.)
+  's-imsy': 's-imsy',
+
+  // Allsee Technologies — sub-tenant of S-IMSY
   'allsee technologies limited': 'allsee',
   'allsee technologies': 'allsee',
   'allsee': 'allsee',
 
-  // Cellular-Lan
+  // Cellular-Lan — sub-tenant of S-IMSY
   'cellular-lan': 'cellular-lan',
   'cellularlan': 'cellular-lan',
   'cellular lan': 'cellular-lan',
 
-  // SIMSY_application (S-IMSY)
+  // SIMSY_application — sub-tenant of S-IMSY (separate from S-IMSY itself)
   'simsy_application': 'simsy-app',
   'simsy application': 'simsy-app',
-  's-imsy': 'simsy-app',
   'simsy': 'simsy-app',
 
-  // Travel-SIMSY
+  // Travel-SIMSY — sub-tenant of S-IMSY
   'travel-simsy': 'travel-simsy',
   'travel simsy': 'travel-simsy',
   'travelsimsy': 'travel-simsy',
 
-  // Trvllr (separate tenant)
+  // Trvllr — sub-tenant of S-IMSY
   'trvllr': 'trvllr',
 
-  // Test / internal accounts — map to simsy-app
-  'dave (testing)': 'simsy-app',
-  'dave testing': 'simsy-app',
+  // Test / internal accounts — map to s-imsy (master)
+  'dave (testing)': 's-imsy',
+  'dave testing': 's-imsy',
 };
 
 /**
@@ -61,7 +67,7 @@ export function resolveTenantId(
       return TENANT_NAME_MAP[normalised];
     }
     // If tenant_id is already a canonical form, check directly
-    const canonical = ['allsee', 'cellular-lan', 'simsy-app', 'travel-simsy', 'trvllr'];
+    const canonical = ['s-imsy', 'allsee', 'cellular-lan', 'simsy-app', 'travel-simsy', 'trvllr'];
     if (canonical.includes(normalised)) {
       return normalised;
     }
