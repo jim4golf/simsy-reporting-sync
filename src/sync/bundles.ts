@@ -157,6 +157,30 @@ export async function syncBundles(
       console.log(`[BUNDLES] Catalog: ${catalogRows.length} unique bundles derived`);
     }
 
+    // ── Phase 3: Backfill missing endpoint_name and customer_name ──
+    // If an ICCID has endpoint_name on some rows but not others, fill the gaps
+    try {
+      const backfillResult = await sql.unsafe(`
+        UPDATE rpt_bundle_instances bi
+        SET
+          endpoint_name = COALESCE(bi.endpoint_name, lookup.endpoint_name),
+          customer_name = COALESCE(bi.customer_name, lookup.customer_name)
+        FROM (
+          SELECT DISTINCT ON (iccid)
+            iccid, endpoint_name, customer_name
+          FROM rpt_bundle_instances
+          WHERE endpoint_name IS NOT NULL AND endpoint_name != ''
+          ORDER BY iccid, synced_at DESC
+        ) lookup
+        WHERE bi.iccid = lookup.iccid
+          AND (bi.endpoint_name IS NULL OR bi.endpoint_name = ''
+               OR bi.customer_name IS NULL OR bi.customer_name = '')
+      `);
+      console.log(`[BUNDLES] Backfill: patched endpoint_name/customer_name on ${backfillResult.count} rows`);
+    } catch (e) {
+      console.warn(`[BUNDLES] Backfill failed (non-critical): ${e instanceof Error ? e.message : String(e)}`);
+    }
+
     console.log(`[BUNDLES] Sync complete: ${recordsSynced} instances, ${catalogRows.length} catalog entries in ${((Date.now() - start) / 1000).toFixed(1)}s`);
     return { table: 'rpt_bundle_instances', recordsSynced, duration: Date.now() - start };
   } catch (error) {

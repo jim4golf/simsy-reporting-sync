@@ -73,7 +73,11 @@ export async function syncEndpoints(
       const tenantId = resolveTenantId(null, r.tenant_id);
       if (!tenantId) continue;
 
-      mapped.push(`(${esc(r.endpoint_identifier)}, ${esc(tenantId)}, ${esc(r.customer_id)}, ${esc(r.endpoint_name)}, ${esc(r.endpoint_type)}, ${esc(r.endpoint_type_name)}, ${esc(r.status)}, ${esc(r.endpoint_status_name)}, ${esc(r.endpoint_network_status_name)}, ${esc(r.usage_rolling_24h)}, ${esc(r.usage_rolling_7d)}, ${esc(r.usage_rolling_28d)}, ${esc(r.usage_rolling_1y)}, ${esc(r.charge_rolling_24h)}, ${esc(r.charge_rolling_7d)}, ${esc(r.charge_rolling_28d)}, ${esc(r.charge_rolling_1y)}, ${esc(r.first_activity)}, ${esc(r.latest_activity)}, NOW())`);
+      // If status/endpoint_status_name are null, fall back to network_status_name
+      const effectiveStatus = r.status || r.endpoint_status_name || r.endpoint_network_status_name || null;
+      const effectiveStatusName = r.endpoint_status_name || r.endpoint_network_status_name || r.status || null;
+
+      mapped.push(`(${esc(r.endpoint_identifier)}, ${esc(tenantId)}, ${esc(r.customer_id)}, ${esc(r.endpoint_name)}, ${esc(r.endpoint_type)}, ${esc(r.endpoint_type_name)}, ${esc(effectiveStatus)}, ${esc(effectiveStatusName)}, ${esc(r.endpoint_network_status_name)}, ${esc(r.usage_rolling_24h)}, ${esc(r.usage_rolling_7d)}, ${esc(r.usage_rolling_28d)}, ${esc(r.usage_rolling_1y)}, ${esc(r.charge_rolling_24h)}, ${esc(r.charge_rolling_7d)}, ${esc(r.charge_rolling_28d)}, ${esc(r.charge_rolling_1y)}, ${esc(r.first_activity)}, ${esc(r.latest_activity)}, NOW())`);
     }
 
     console.log(`[ENDPOINTS] Mapped ${mapped.length} records (${records.length - mapped.length} skipped — unknown tenant)`);
