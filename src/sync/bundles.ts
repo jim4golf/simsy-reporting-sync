@@ -16,6 +16,7 @@ import type { SupabaseBundleRecord, SyncResult } from '../types';
 import { resolveTenantId, buildBundleInstanceSourceId } from '../sanitise';
 
 // Select all instance-level columns from Supabase active_bundles
+// Note: allowance data is not available in this source table
 const SELECT_COLUMNS = [
   'id', 'bundle_id', 'bundle_name', 'bundle_moniker',
   'status_name', 'status_moniker',

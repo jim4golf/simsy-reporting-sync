@@ -22,6 +22,36 @@ export function createDbClient(env: Env) {
 }
 
 /**
+ * Backfill data_used_mb on rpt_bundle_instances by aggregating
+ * charged_consumption from rpt_usage per bundle_instance_id.
+ * charged_consumption is in bytes — convert to MB.
+ */
+export async function backfillBundleUsage(sql: postgres.Sql) {
+  console.log('[DB] Backfilling bundle instance data usage from charged_consumption...');
+
+  try {
+    const result = await sql.unsafe(`
+      UPDATE rpt_bundle_instances bi
+      SET data_used_mb = usage.total_mb
+      FROM (
+        SELECT
+          bundle_instance_id,
+          ROUND(SUM(COALESCE(charged_consumption, 0)) / (1024.0 * 1024.0))::BIGINT AS total_mb
+        FROM rpt_usage
+        WHERE bundle_instance_id IS NOT NULL
+          AND bundle_instance_id != ''
+        GROUP BY bundle_instance_id
+      ) usage
+      WHERE bi.bundle_instance_id = usage.bundle_instance_id
+        AND bi.bundle_instance_id IS NOT NULL
+    `);
+    console.log(`[DB] Backfill complete: updated ${result.count} bundle instances with data_used_mb`);
+  } catch (error) {
+    console.error('[DB] Backfill data_used_mb failed:', error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
  * Refresh all materialised views after a sync cycle.
  * Uses CONCURRENTLY to avoid blocking reads during refresh.
  */

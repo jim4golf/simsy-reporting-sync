@@ -10,7 +10,7 @@
 
 import type { Env, SyncResult } from './types';
 import { SupabaseClient } from './supabase-client';
-import { createDbClient, refreshMaterialisedViews } from './db';
+import { createDbClient, backfillBundleUsage, refreshMaterialisedViews } from './db';
 import { syncUsage } from './sync/usage';
 import { syncBundles } from './sync/bundles';
 import { syncInstances } from './sync/instances';
@@ -110,7 +110,11 @@ export default {
         await env.SYNC_KV.put('sync:watermark:bundles', now);
       }
 
-      // 5. Refresh materialised views
+      // 5. Backfill data_used_mb on bundle instances from charged_consumption
+      console.log('\n--- Backfilling Bundle Data Usage ---');
+      await backfillBundleUsage(sql);
+
+      // 6. Refresh materialised views
       console.log('\n--- Refreshing Materialised Views ---');
       await refreshMaterialisedViews(sql);
 
