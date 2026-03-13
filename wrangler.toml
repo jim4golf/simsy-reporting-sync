@@ -2,8 +2,9 @@ name = "simsy-reporting-sync"
 main = "src/index.ts"
 compatibility_date = "2024-11-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
 
-# Cron trigger — runs every 30 minutes during development
+# Cron trigger — runs every 30 minutes
 [triggers]
 crons = ["*/30 * * * *"]
 

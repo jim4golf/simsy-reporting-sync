@@ -97,6 +97,22 @@ export async function backfillBundleUsage(sql: postgres.Sql) {
     `);
     console.log(`[DB] Backfill (ICCID+daterange): updated ${result2.count} additional instances`);
 
+    // Populate data_allowance_mb from bundle_name patterns (1GB, 2GB, 3GB, 5GB, 10GB)
+    const allowanceResult = await sql.unsafe(`
+      UPDATE rpt_bundle_instances
+      SET data_allowance_mb = CASE
+        WHEN bundle_name ~* '10\\s*GB' THEN 10240
+        WHEN bundle_name ~* '5\\s*GB'  THEN 5120
+        WHEN bundle_name ~* '3\\s*GB'  THEN 3072
+        WHEN bundle_name ~* '2\\s*GB'  THEN 2048
+        WHEN bundle_name ~* '1\\s*GB'  THEN 1024
+        ELSE NULL
+      END
+      WHERE bundle_name IS NOT NULL
+        AND (data_allowance_mb IS NULL OR data_allowance_mb = 0)
+    `);
+    console.log(`[DB] Backfill data_allowance_mb from bundle name: updated ${allowanceResult.count} instances`);
+
   } catch (error) {
     console.error('[DB] Backfill data_used_mb failed:', error instanceof Error ? error.message : String(error));
   }

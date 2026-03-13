@@ -1,10 +1,10 @@
 /**
  * Sync: endpoints (Supabase) → rpt_endpoints (PostgreSQL)
  *
- * Strips ALL sensitive identifiers: ICCID, IMSI, MSISDN, IMEI, EID,
+ * Strips sensitive identifiers: IMSI, MSISDN, IMEI, EID,
  * activation_code, lpa_string, IP address, lat/lon, raw_data
  *
- * Keeps: endpoint name, type, status, rolling usage/charge metrics, activity dates
+ * Keeps: ICCID, endpoint name, type, status, rolling usage/charge metrics, activity dates
  *
  * Uses bulk INSERT with multi-row VALUES for performance.
  */
@@ -16,7 +16,7 @@ import { resolveTenantId } from '../sanitise';
 
 // Only select non-sensitive columns
 const SELECT_COLUMNS = [
-  'id', 'endpoint_identifier',
+  'id', 'endpoint_identifier', 'iccid',
   'endpoint_name', 'endpoint_type', 'endpoint_type_name',
   'status', 'endpoint_status_name', 'endpoint_network_status_name',
   'tenant_id', 'customer_id',
@@ -25,7 +25,7 @@ const SELECT_COLUMNS = [
   'first_activity', 'latest_activity',
   'created_at', 'updated_at',
   // Deliberately NOT selecting:
-  // iccid, imsi, msisdn, imei, eid, epid, activation_code, lpa_string,
+  // imsi, msisdn, imei, eid, epid, activation_code, lpa_string,
   // ip_address, endpoint_http_address, endpoint_http_addresses,
   // latest_lat, latest_lon, raw_data, identities, tags
 ].join(',');
@@ -77,7 +77,7 @@ export async function syncEndpoints(
       const effectiveStatus = r.status || r.endpoint_status_name || r.endpoint_network_status_name || null;
       const effectiveStatusName = r.endpoint_status_name || r.endpoint_network_status_name || r.status || null;
 
-      mapped.push(`(${esc(r.endpoint_identifier)}, ${esc(tenantId)}, ${esc(r.customer_id)}, ${esc(r.endpoint_name)}, ${esc(r.endpoint_type)}, ${esc(r.endpoint_type_name)}, ${esc(effectiveStatus)}, ${esc(effectiveStatusName)}, ${esc(r.endpoint_network_status_name)}, ${esc(r.usage_rolling_24h)}, ${esc(r.usage_rolling_7d)}, ${esc(r.usage_rolling_28d)}, ${esc(r.usage_rolling_1y)}, ${esc(r.charge_rolling_24h)}, ${esc(r.charge_rolling_7d)}, ${esc(r.charge_rolling_28d)}, ${esc(r.charge_rolling_1y)}, ${esc(r.first_activity)}, ${esc(r.latest_activity)}, NOW())`);
+      mapped.push(`(${esc(r.endpoint_identifier)}, ${esc(tenantId)}, ${esc(r.customer_id)}, ${esc(r.iccid)}, ${esc(r.endpoint_name)}, ${esc(r.endpoint_type)}, ${esc(r.endpoint_type_name)}, ${esc(effectiveStatus)}, ${esc(effectiveStatusName)}, ${esc(r.endpoint_network_status_name)}, ${esc(r.usage_rolling_24h)}, ${esc(r.usage_rolling_7d)}, ${esc(r.usage_rolling_28d)}, ${esc(r.usage_rolling_1y)}, ${esc(r.charge_rolling_24h)}, ${esc(r.charge_rolling_7d)}, ${esc(r.charge_rolling_28d)}, ${esc(r.charge_rolling_1y)}, ${esc(r.first_activity)}, ${esc(r.latest_activity)}, NOW())`);
     }
 
     console.log(`[ENDPOINTS] Mapped ${mapped.length} records (${records.length - mapped.length} skipped — unknown tenant)`);
@@ -93,7 +93,7 @@ export async function syncEndpoints(
 
       await sql.unsafe(`
         INSERT INTO rpt_endpoints (
-          source_id, tenant_id, customer_id,
+          source_id, tenant_id, customer_id, iccid,
           endpoint_name, endpoint_type, endpoint_type_name,
           status, endpoint_status_name, network_status_name,
           usage_rolling_24h, usage_rolling_7d, usage_rolling_28d, usage_rolling_1y,
@@ -102,6 +102,7 @@ export async function syncEndpoints(
         ) VALUES ${valuesClauses}
         ON CONFLICT (source_id, tenant_id) WHERE source_id IS NOT NULL
         DO UPDATE SET
+          iccid = EXCLUDED.iccid,
           endpoint_name = EXCLUDED.endpoint_name,
           status = EXCLUDED.status,
           endpoint_status_name = EXCLUDED.endpoint_status_name,

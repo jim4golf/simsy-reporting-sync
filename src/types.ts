@@ -81,6 +81,7 @@ export interface SupabaseBundleInstanceRecord {
 export interface SupabaseEndpointRecord {
   id: string;
   endpoint_identifier: string;
+  iccid: string | null;
   endpoint_name: string | null;
   endpoint_type: string | null;
   endpoint_type_name: string | null;

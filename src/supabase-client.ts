@@ -33,6 +33,8 @@ export class SupabaseClient {
       batchSize?: number;
       orderBy?: string;
       maxRecords?: number;
+      extraFilters?: Record<string, string>;
+      rawFilterSuffix?: string;
     } = {}
   ): Promise<T[]> {
     const {
@@ -42,6 +44,8 @@ export class SupabaseClient {
       batchSize = 1000,
       orderBy = 'created_at',
       maxRecords,
+      extraFilters,
+      rawFilterSuffix,
     } = options;
 
     const allRecords: T[] = [];
@@ -58,17 +62,32 @@ export class SupabaseClient {
         params.set(watermarkColumn, `gt.${watermark}`);
       }
 
-      const url = `${this.url}/rest/v1/${table}?${params.toString()}`;
+      // Apply any extra filters (e.g., timestamp range for month-by-month sync)
+      if (extraFilters) {
+        for (const [key, value] of Object.entries(extraFilters)) {
+          params.set(key, value);
+        }
+      }
 
-      const response = await fetch(url, {
-        headers: {
-          'apikey': this.serviceKey,
-          'Authorization': `Bearer ${this.serviceKey}`,
-          'Content-Type': 'application/json',
-          'Range': `${offset}-${offset + batchSize - 1}`,
-          'Prefer': 'count=exact',
-        },
-      });
+      let url = `${this.url}/rest/v1/${table}?${params.toString()}`;
+      // Append raw filter suffix directly to avoid URL encoding issues with PostgREST operators
+      if (rawFilterSuffix) {
+        url += `&${rawFilterSuffix}`;
+      }
+
+      const headers: Record<string, string> = {
+        'apikey': this.serviceKey,
+        'Authorization': `Bearer ${this.serviceKey}`,
+        'Content-Type': 'application/json',
+        'Range': `${offset}-${offset + batchSize - 1}`,
+      };
+      // Only request exact count when no raw filter is used
+      // (count=exact on large tables with filters can cause statement timeout)
+      if (!rawFilterSuffix) {
+        headers['Prefer'] = 'count=exact';
+      }
+
+      const response = await fetch(url, { headers });
 
       if (!response.ok) {
         const error = await response.text();
@@ -91,11 +110,13 @@ export class SupabaseClient {
         // Format: "0-999/5000" or "0-999/*"
         const match = contentRange.match(/\/(\d+|\*)/);
         const total = match ? match[1] : '*';
-        if (total === '*' || offset + batchSize >= parseInt(total, 10)) {
+        // Only stop based on content-range if we know the exact total
+        if (total !== '*' && offset + batchSize >= parseInt(total, 10)) {
           hasMore = false;
         }
       }
 
+      // Always stop if we got fewer records than requested (final page)
       if (records.length < batchSize) {
         hasMore = false;
       }
@@ -109,6 +130,63 @@ export class SupabaseClient {
       }
     }
 
+    return allRecords;
+  }
+
+  /**
+   * Fetch records for a specific month using cursor pagination with timestamp filter.
+   * Uses small batch sizes (200) to avoid Supabase statement timeout.
+   */
+  async fetchByMonth<T extends { id: string }>(
+    table: string,
+    select: string,
+    monthStart: string,
+    monthEnd: string,
+    batchSize: number = 200,
+    maxRecords: number = 200000
+  ): Promise<T[]> {
+    console.log(`[${table}] Fetching ${monthStart} to ${monthEnd} (batch=${batchSize})...`);
+    const allRecords: T[] = [];
+    let lastId: string | null = null;
+    let hasMore = true;
+    let pageCount = 0;
+
+    while (hasMore && allRecords.length < maxRecords) {
+      let url = `${this.url}/rest/v1/${table}?select=${select}&order=id.asc&limit=${batchSize}`;
+      url += `&timestamp=gte.${monthStart}&timestamp=lt.${monthEnd}`;
+      if (lastId) {
+        url += `&id=gt.${lastId}`;
+      }
+
+      const response = await fetch(url, {
+        headers: {
+          'apikey': this.serviceKey,
+          'Authorization': `Bearer ${this.serviceKey}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`Supabase fetchByMonth failed (${response.status}): ${error}`);
+      }
+
+      const records = await response.json() as T[];
+      allRecords.push(...records);
+      pageCount++;
+
+      if (records.length < batchSize) {
+        hasMore = false;
+      } else {
+        lastId = records[records.length - 1].id;
+      }
+
+      if (allRecords.length % 5000 < batchSize) {
+        console.log(`[${table}] Fetched ${allRecords.length} records (${pageCount} pages)...`);
+      }
+    }
+
+    console.log(`[${table}] Done: ${allRecords.length} records in ${pageCount} pages`);
     return allRecords;
   }
 }

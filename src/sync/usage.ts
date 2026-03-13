@@ -40,8 +40,8 @@ const SELECT_COLUMNS = [
 const BULK_INSERT_SIZE = 500;
 
 // Maximum records to fetch per sync invocation to avoid Worker timeout
-// At 500 rows/INSERT, 50k records = 100 INSERT statements — very fast
-const MAX_RECORDS_PER_RUN = 50000;
+// Keep small to stay within Cloudflare Worker CPU limits
+const MAX_RECORDS_PER_RUN = 5000;
 
 /** Escape a value for a raw SQL VALUES clause. */
 function esc(v: string | number | null | undefined): string {
@@ -98,7 +98,7 @@ function rowToValues(v: MappedRow): string {
  * 2. bundle_instances_report — iccid + tenant_name/tenant_id
  * 3. active_bundles — iccid + tenant_name (if iccid column exists)
  */
-async function buildIccidTenantMap(
+export async function buildIccidTenantMap(
   supabase: SupabaseClient
 ): Promise<{ exactMap: Map<string, string>; prefixMap: Map<string, string> }> {
   const map = new Map<string, string>();
@@ -222,13 +222,17 @@ export async function syncUsage(
   sql: postgres.Sql,
   watermark: string | null,
   batchSize: number,
-  saveWatermark?: (wm: string) => Promise<void>
+  saveWatermark?: (wm: string) => Promise<void>,
+  maxRecordsOverride?: number,
+  rawFilterSuffix?: string,
+  orderByOverride?: string
 ): Promise<SyncResult> {
   const start = Date.now();
   let recordsSynced = 0;
+  const effectiveMax = maxRecordsOverride ?? MAX_RECORDS_PER_RUN;
 
   try {
-    console.log(`[USAGE] Starting sync (watermark: ${watermark || 'none'})`);
+    console.log(`[USAGE] Starting sync (watermark: ${watermark || 'none'}, maxRecords: ${effectiveMax}, rawFilter: ${rawFilterSuffix || 'none'})`);
 
     // Build ICCID→tenant lookup for records with null tenant_name
     const { exactMap: iccidTenantMap, prefixMap: iccidPrefixMap } = await buildIccidTenantMap(supabase);
@@ -240,7 +244,9 @@ export async function syncUsage(
         watermark,
         watermarkColumn: 'created_at',
         batchSize,
-        maxRecords: MAX_RECORDS_PER_RUN,
+        maxRecords: effectiveMax,
+        rawFilterSuffix,
+        orderBy: orderByOverride,
       }
     );
 
@@ -359,13 +365,15 @@ export async function syncUsage(
         ON CONFLICT (source_id) WHERE source_id IS NOT NULL
         DO UPDATE SET
           tenant_id = EXCLUDED.tenant_id,
-          customer_name = EXCLUDED.customer_name,
-          bundle_name = EXCLUDED.bundle_name,
-          bundle_moniker = EXCLUDED.bundle_moniker,
-          status_moniker = EXCLUDED.status_moniker,
-          bundle_instance_id = EXCLUDED.bundle_instance_id,
-          sequence = EXCLUDED.sequence,
-          sequence_max = EXCLUDED.sequence_max,
+          customer_name = COALESCE(EXCLUDED.customer_name, rpt_usage.customer_name),
+          endpoint_name = COALESCE(EXCLUDED.endpoint_name, rpt_usage.endpoint_name),
+          endpoint_description = COALESCE(EXCLUDED.endpoint_description, rpt_usage.endpoint_description),
+          bundle_name = COALESCE(EXCLUDED.bundle_name, rpt_usage.bundle_name),
+          bundle_moniker = COALESCE(EXCLUDED.bundle_moniker, rpt_usage.bundle_moniker),
+          status_moniker = COALESCE(EXCLUDED.status_moniker, rpt_usage.status_moniker),
+          bundle_instance_id = COALESCE(EXCLUDED.bundle_instance_id, rpt_usage.bundle_instance_id),
+          sequence = COALESCE(EXCLUDED.sequence, rpt_usage.sequence),
+          sequence_max = COALESCE(EXCLUDED.sequence_max, rpt_usage.sequence_max),
           synced_at = NOW()
       `);
 
@@ -387,9 +395,9 @@ export async function syncUsage(
       }
     }
 
-    const hasMore = records.length >= MAX_RECORDS_PER_RUN;
+    const hasMore = records.length >= effectiveMax;
     if (hasMore) {
-      console.log(`[USAGE] Hit max records limit (${MAX_RECORDS_PER_RUN}). More records remain — next cron will continue.`);
+      console.log(`[USAGE] Hit max records limit (${effectiveMax}). More records remain — next cron will continue.`);
     }
 
     console.log(`[USAGE] Sync complete: ${recordsSynced} records in ${((Date.now() - start) / 1000).toFixed(1)}s`);
@@ -397,6 +405,163 @@ export async function syncUsage(
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     console.error(`[USAGE] Sync failed: ${msg}`);
+    return { table: 'rpt_usage', recordsSynced, duration: Date.now() - start, error: msg };
+  }
+}
+
+/**
+ * Sync usage records for a specific month using cursor-based pagination.
+ * This avoids the Supabase statement timeout by:
+ * 1. Filtering by timestamp range (one month at a time)
+ * 2. Using id-based cursor pagination (no OFFSET, no count=exact)
+ * 3. Ordering by id (primary key, always indexed)
+ */
+export async function syncUsageByMonth(
+  supabase: SupabaseClient,
+  sql: postgres.Sql,
+  monthStart: string,
+  monthEnd: string,
+  fetchBatchSize: number = 200,
+  iccidMaps?: { exactMap: Map<string, string>; prefixMap: Map<string, string> }
+): Promise<SyncResult> {
+  const start = Date.now();
+  let recordsSynced = 0;
+
+  try {
+    console.log(`[USAGE-MONTH] Syncing ${monthStart} to ${monthEnd} (fetchBatch=${fetchBatchSize})...`);
+
+    // Build ICCID→tenant map if not provided (first month in a batch builds it, rest reuse)
+    let iccidTenantMap: Map<string, string>;
+    let iccidPrefixMap: Map<string, string>;
+    if (iccidMaps) {
+      iccidTenantMap = iccidMaps.exactMap;
+      iccidPrefixMap = iccidMaps.prefixMap;
+      console.log(`[USAGE-MONTH] Reusing ICCID maps (${iccidTenantMap.size} exact, ${iccidPrefixMap.size} prefix)`);
+    } else {
+      console.log(`[USAGE-MONTH] Building ICCID→tenant lookup...`);
+      const maps = await buildIccidTenantMap(supabase);
+      iccidTenantMap = maps.exactMap;
+      iccidPrefixMap = maps.prefixMap;
+    }
+
+    // Fetch all records for this month using direct cursor pagination
+    // Each request fetches `fetchBatchSize` rows using primary key cursor + timestamp filter
+    // This avoids Supabase statement timeout (tested: 200 records takes ~1.5-3s)
+    const records = await supabase.fetchByMonth<SupabaseUsageRecord>(
+      'custom_usage_reports',
+      SELECT_COLUMNS,
+      monthStart,
+      monthEnd,
+      fetchBatchSize,
+      200000
+    );
+
+    console.log(`[USAGE-MONTH] Fetched ${records.length} records from Supabase`);
+
+    if (records.length === 0) {
+      return { table: 'rpt_usage', recordsSynced: 0, duration: Date.now() - start };
+    }
+
+    // Map records with tenant resolution
+    const mapped: MappedRow[] = [];
+    let skippedNoTenant = 0;
+
+    for (const r of records) {
+      let tenantId = resolveTenantId(r.tenant_name, null);
+      if (!tenantId && r.iccid) {
+        const normalised = r.iccid.trim();
+        tenantId = iccidTenantMap.get(normalised) || null;
+        if (!tenantId) {
+          const prefix = normalised.substring(0, 12);
+          tenantId = iccidPrefixMap.get(prefix) || null;
+        }
+      }
+
+      if (!tenantId) {
+        skippedNoTenant++;
+        continue;
+      }
+
+      const usageDate = r.timestamp ? r.timestamp.substring(0, 10) : null;
+
+      mapped.push({
+        source_id: r.id,
+        tenant_id: tenantId,
+        customer_name: r.customer_name || null,
+        endpoint_name: r.endpoint_name || null,
+        endpoint_description: r.endpoint_description || null,
+        iccid: r.iccid || null,
+        timestamp: r.timestamp || null,
+        usage_date: usageDate,
+        service_type: r.service_type || null,
+        charge_type: r.charge_type || null,
+        consumption: r.consumption ?? null,
+        charged_consumption: r.charged_consumption ?? null,
+        uplink_bytes: r.uplink_bytes ?? null,
+        downlink_bytes: r.downlink_bytes ?? null,
+        bundle_name: r.bundle_name || null,
+        bundle_moniker: r.bundle_moniker || null,
+        status_moniker: r.status_moniker || null,
+        bundle_instance_id: r.bundle_instance_id || null,
+        sequence: r.sequence ?? null,
+        sequence_max: r.sequence_max ?? null,
+        rat_type_moniker: r.rat_type_moniker || null,
+        serving_operator_name: r.serving_operator_name || null,
+        serving_country_name: null,
+        serving_country_iso2: null,
+        buy_charge: r.buy_rating_charge ?? null,
+        buy_currency: r.buy_rating_currency || null,
+        sell_charge: r.sell_rating_charge ?? null,
+        sell_currency: r.sell_rating_currency || null,
+        created_at: r.created_at || null,
+      });
+    }
+
+    console.log(`[USAGE-MONTH] Mapped ${mapped.length} records (skipped ${skippedNoTenant} no-tenant)`);
+
+    if (mapped.length === 0) {
+      return { table: 'rpt_usage', recordsSynced: 0, duration: Date.now() - start };
+    }
+
+    // Bulk insert
+    for (let i = 0; i < mapped.length; i += BULK_INSERT_SIZE) {
+      const chunk = mapped.slice(i, i + BULK_INSERT_SIZE);
+      const valuesClauses = chunk.map(rowToValues).join(',\n');
+
+      await sql.unsafe(`
+        INSERT INTO rpt_usage (
+          source_id, tenant_id, customer_name, endpoint_name, endpoint_description,
+          iccid, timestamp, usage_date, service_type, charge_type,
+          consumption, charged_consumption, uplink_bytes, downlink_bytes,
+          bundle_name, bundle_moniker, status_moniker,
+          bundle_instance_id, sequence, sequence_max,
+          rat_type_moniker,
+          serving_operator_name, serving_country_name, serving_country_iso2,
+          buy_charge, buy_currency, sell_charge, sell_currency, synced_at
+        ) VALUES ${valuesClauses}
+        ON CONFLICT (source_id) WHERE source_id IS NOT NULL
+        DO UPDATE SET
+          tenant_id = EXCLUDED.tenant_id,
+          customer_name = COALESCE(EXCLUDED.customer_name, rpt_usage.customer_name),
+          endpoint_name = COALESCE(EXCLUDED.endpoint_name, rpt_usage.endpoint_name),
+          endpoint_description = COALESCE(EXCLUDED.endpoint_description, rpt_usage.endpoint_description),
+          bundle_name = COALESCE(EXCLUDED.bundle_name, rpt_usage.bundle_name),
+          bundle_moniker = COALESCE(EXCLUDED.bundle_moniker, rpt_usage.bundle_moniker),
+          status_moniker = COALESCE(EXCLUDED.status_moniker, rpt_usage.status_moniker),
+          bundle_instance_id = COALESCE(EXCLUDED.bundle_instance_id, rpt_usage.bundle_instance_id),
+          sequence = COALESCE(EXCLUDED.sequence, rpt_usage.sequence),
+          sequence_max = COALESCE(EXCLUDED.sequence_max, rpt_usage.sequence_max),
+          synced_at = NOW()
+      `);
+
+      recordsSynced += chunk.length;
+    }
+
+    console.log(`[USAGE-MONTH] Complete: ${recordsSynced} records in ${((Date.now() - start) / 1000).toFixed(1)}s`);
+    return { table: 'rpt_usage', recordsSynced, duration: Date.now() - start };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[USAGE-MONTH] Failed: ${msg}`);
     return { table: 'rpt_usage', recordsSynced, duration: Date.now() - start, error: msg };
   }
 }
